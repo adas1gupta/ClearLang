@@ -1,1 +1,6 @@
 env/
+models/
+data/results/
+data/processed/
+data/raw/
+.DS_Store

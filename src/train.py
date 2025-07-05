@@ -1,41 +1,41 @@
-import pandas
-from datasets import Dataset
-import evaluate
-from transformers import MT5Tokenizer
-from transformers import ByT5Tokenizer
-from transformers import AutoModelForSeq2SeqLM, Seq2SeqTrainer, Seq2SeqTrainingArguments
+import pandas as pd
 import numpy as np
+from datasets import Dataset
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSeq2SeqLM,
+    Seq2SeqTrainer,
+    Seq2SeqTrainingArguments,
+)
+import evaluate
 
 TRAIN_PATH = "data/processed/training.csv"
-TEST_PATH = "data/processed/test.csv"
-MAX_INPUT_LEN = 64
+TEST_PATH  = "data/processed/test.csv"
+MAX_INPUT_LEN  = 64
 MAX_TARGET_LEN = 64
 
-train_df = pandas.read_csv(TRAIN_PATH).dropna(subset=["foreign","native"]).reset_index(drop=True)
-test_df  = pandas.read_csv(TEST_PATH).dropna( subset=["foreign","native"]).reset_index(drop=True)
-
-train_dataset = Dataset.from_pandas(train_df, preserve_index=False)
-train_dataset = train_dataset.select(range(2000))
-test_dataset = Dataset.from_pandas(test_df, preserve_index=False)
-test_dataset = test_dataset.select(range(500))
-
-mt5_tokenizer = MT5Tokenizer.from_pretrained("google/mt5-small")
-byt5_tokenizer = ByT5Tokenizer.from_pretrained("google/byt5-small")
+train_df = pd.read_csv(TRAIN_PATH).dropna(subset=["foreign","native"]).reset_index(drop=True)
+test_df  = pd.read_csv(TEST_PATH).dropna(subset=["foreign","native"]).reset_index(drop=True)
+train_ds = Dataset.from_pandas(train_df).select(range(2000))
+test_ds  = Dataset.from_pandas(test_df).select(range(500))
 
 metric = evaluate.load("sacrebleu")
 
-model = AutoModelForSeq2SeqLM.from_pretrained("google/mt5-small")
+def compute_metrics(eval_preds, tokenizer):
+    preds, labels = eval_preds
+    decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    bleu = metric.compute(predictions=decoded_preds, references=[[l] for l in decoded_labels])
+    return {"bleu": bleu["score"]}
 
-# Tokenization function
 def tokenize_batch(batch, tokenizer):
-
-    model_inputs = tokenizer(
+    inputs = tokenizer(
         batch["foreign"],
         max_length=MAX_INPUT_LEN,
         padding="max_length",
         truncation=True,
     )
-    
     with tokenizer.as_target_tokenizer():
         labels = tokenizer(
             batch["native"],
@@ -43,55 +43,48 @@ def tokenize_batch(batch, tokenizer):
             padding="max_length",
             truncation=True,
         )
-    
-    model_inputs["labels"] = labels["input_ids"]
-    return model_inputs
+    inputs["labels"] = labels["input_ids"]
+    return inputs
 
-tokenized_train = train_dataset.map(
-    lambda batch: tokenize_batch(batch, mt5_tokenizer),
-    batched=True,
-    remove_columns=train_dataset.column_names
-)
+# Training function
+def fine_tune(model_name, tokenizer_cls, model_cls, output_dir):
+    print(f"\n\n▶️ Fine-tuning {model_name} …")
+    tokenizer = tokenizer_cls.from_pretrained(f"google/{model_name}-small")
+    tokenized_train = train_ds.map(lambda b: tokenize_batch(b, tokenizer), batched=True, remove_columns=train_ds.column_names)
+    tokenized_test  = test_ds.map(lambda b: tokenize_batch(b, tokenizer), batched=True, remove_columns=test_ds.column_names)
 
-tokenized_test = test_dataset.map(
-    lambda batch: tokenize_batch(batch, mt5_tokenizer),
-    batched=True,
-    remove_columns=test_dataset.column_names
-)
+    model = model_cls.from_pretrained(f"google/{model_name}-small")
 
-# Compute metrics function
-def compute_metrics(eval_preds):
-    preds, labels = eval_preds
-    decoded_preds = mt5_tokenizer.batch_decode(preds, skip_special_tokens=True)
-    labels = np.where(labels != -100, labels, mt5_tokenizer.pad_token_id)
-    decoded_labels = mt5_tokenizer.batch_decode(labels, skip_special_tokens=True)
-    bleu = metric.compute(predictions=decoded_preds, references=[[l] for l in decoded_labels])
-    return {"bleu": bleu["score"]}
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=output_dir,
+        do_train=True,
+        do_eval=True,
+        eval_steps=500,
+        logging_steps=10,
+        save_steps=500,
+        save_total_limit=2,
+        learning_rate=2e-4,
+        per_device_train_batch_size=4,
+        per_device_eval_batch_size=4,
+        weight_decay=0.01,
+        num_train_epochs=3,
+        predict_with_generate=True,
+    )
 
-training_args = Seq2SeqTrainingArguments(
-    output_dir="models/mt5",
-    do_train=True,
-    do_eval=True,             
-    eval_steps=500,           
-    logging_steps=10,
-    save_steps=500,           
-    save_total_limit=2,
-    learning_rate=2e-4,
-    per_device_train_batch_size=4,
-    per_device_eval_batch_size=4,
-    weight_decay=0.01,
-    num_train_epochs=3,
-    predict_with_generate=True,
-)
+    trainer = Seq2SeqTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized_train,
+        eval_dataset=tokenized_test,
+        tokenizer=tokenizer,
+        compute_metrics=lambda p: compute_metrics(p, tokenizer),
+    )
 
-trainer = Seq2SeqTrainer(
-    model=model,
-    args=training_args,
-    train_dataset=tokenized_train,
-    eval_dataset=tokenized_test,
-    tokenizer=mt5_tokenizer,
-    compute_metrics=compute_metrics,
-)
+    trainer.train()
+    trainer.save_model(f"{output_dir}/final")
+    print(f"={model_name} done, checkpoint in {output_dir}/final")
 
-trainer.train()
-trainer.save_model("models/mt5/final")
+if __name__ == "__main__":
+    from transformers import MT5Tokenizer, ByT5Tokenizer, AutoModelForSeq2SeqLM
+    fine_tune("mt5",  MT5Tokenizer,  AutoModelForSeq2SeqLM, "models/mt5")
+    fine_tune("byt5", ByT5Tokenizer, AutoModelForSeq2SeqLM, "models/byt5")
