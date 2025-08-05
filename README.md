@@ -80,13 +80,13 @@ Token count: 63
 Latency: 1.53 seconds
 ```
 
-## 🔍 Insights & Observations
+## Insights & Observations
 
 * **Subword tokenization (mT5)** was more stable and efficient on small datasets
 * **Character-level tokenization (ByT5)** requires longer training and larger datasets to reach comparable accuracy
 * The experiment demonstrates the trade-offs between robustness to out-of-vocabulary tokens and convergence speed
 
-## 🌱 Future Improvements
+## Future Improvements
 
 If I were to extend this project, I would:
 
@@ -95,7 +95,7 @@ If I were to extend this project, I would:
 * Package the project in Docker for reproducibility
 * Deploy a REST API behind Kubernetes to scale translations
 
-## 🧠 References
+## References
 
 * [mT5: A Massively Multilingual Pre-trained Text-to-Text Transformer](https://arxiv.org/abs/2010.11934)
 * [ByT5: Towards a Token-Free Future with Pre-trained Byte-to-Byte Models](https://arxiv.org/abs/2105.13626)
